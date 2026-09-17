@@ -55,7 +55,7 @@ local function CreateButton()
 
 	local icon = button:CreateTexture(nil, "ARTWORK")
 	icon:SetSize(19, 19)
-	icon:SetTexture("Interface\\Icons\\Spell_Nature_WaterBolt")
+	icon:SetTexture("Interface\\Icons\\INV_Elemental_Mote_Water01")
 	icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
 	icon:SetPoint("CENTER", 0, 1)
 	icon:SetVertexColor(0.75, 0.95, 1)

@@ -4,7 +4,7 @@
 ## Author: Hailer
 ## Version: 1.0.0
 ## SavedVariables: HailerDB
-## IconTexture: Interface\Icons\Spell_Nature_WaterBolt
+## IconTexture: Interface\Icons\INV_Elemental_Mote_Water01
 ## AddonCompartmentFunc: Hailer_OnAddonCompartmentClick
 ## AddonCompartmentFuncOnEnter: Hailer_OnAddonCompartmentEnter
 ## AddonCompartmentFuncOnLeave: Hailer_OnAddonCompartmentLeave

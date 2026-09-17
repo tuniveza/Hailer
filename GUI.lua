@@ -25,6 +25,11 @@ local function StatusWord(on)
 	return on and "|cff55e0ffON|r" or "|cff888888off|r"
 end
 
+-- Content pages now span the full width of the window (no more left
+-- sidebar eating into it), so page builders share one width constant
+-- instead of a grab-bag of magic numbers.
+local CONTENT_WIDTH = 720
+
 --------------------------------------------------------------------
 -- Basic themed widget helpers
 --------------------------------------------------------------------
@@ -53,6 +58,16 @@ local function CreateCheckbox(parent, labelText)
 	label:SetText(labelText)
 	label:SetTextColor(0.8, 0.92, 1)
 	cb.Text = label
+
+	-- HookScript (not SetScript) so this fires alongside whatever OnClick
+	-- handler each call site attaches afterward, instead of being clobbered.
+	cb:HookScript("OnClick", function(self)
+		if self:GetChecked() then
+			PlaySound(SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON)
+		else
+			PlaySound(SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_OFF)
+		end
+	end)
 
 	return cb
 end
@@ -98,6 +113,7 @@ local function CreateButton(parent, text, width, height)
 
 	btn:SetScript("OnMouseDown", function(self)
 		self:SetBackdropColor(0.03, 0.14, 0.22, 0.96)
+		PlaySound(SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON)
 	end)
 	btn:SetScript("OnMouseUp", function(self)
 		self:SetBackdropColor(0.07, 0.26, 0.40, 0.92)
@@ -109,6 +125,34 @@ end
 local function CreateTabButton(parent, text, onClick, width, iconPath)
 	local btn = CreateButton(parent, text, width or 168, 28)
 	btn:SetScript("OnClick", onClick)
+
+	-- A soft pulsing glow that only shows up while this tab is the active
+	-- one (LockHighlight/UnlockHighlight are already called by SelectTab).
+	local glow = btn:CreateTexture(nil, "ARTWORK", nil, -7)
+	glow:SetAllPoints()
+	glow:SetColorTexture(0.4, 0.85, 1, 1)
+	glow:SetAlpha(0)
+	glow:Hide()
+	local glowAG = glow:CreateAnimationGroup()
+	glowAG:SetLooping("BOUNCE")
+	local glowAlpha = glowAG:CreateAnimation("Alpha")
+	glowAlpha:SetFromAlpha(0.12)
+	glowAlpha:SetToAlpha(0.38)
+	glowAlpha:SetDuration(1.1)
+	glowAlpha:SetSmoothing("IN_OUT")
+
+	local origLock, origUnlock = btn.LockHighlight, btn.UnlockHighlight
+	btn.LockHighlight = function(self)
+		origLock(self)
+		glow:Show()
+		glowAG:Play()
+	end
+	btn.UnlockHighlight = function(self)
+		origUnlock(self)
+		glowAG:Stop()
+		glow:Hide()
+	end
+
 	if iconPath then
 		local icon = btn:CreateTexture(nil, "ARTWORK")
 		icon:SetSize(18, 18)
@@ -280,8 +324,12 @@ local function GetTagMenu()
 	return menu
 end
 
-local function BuildMessagePool(parent, y, pool, width)
-	width = width or 460
+-- poolCfg is the { enabled, messages, rotating } table for one announce or
+-- whisper pool (not just the raw messages array), so this can also surface
+-- the rotating-preset toggle next to it.
+local function BuildMessagePool(parent, y, poolCfg, width)
+	width = width or CONTENT_WIDTH
+	local pool = poolCfg.messages
 
 	local input = CreateEditBox(parent, width - 174)
 	input:SetPoint("TOPLEFT", 20, y)
@@ -293,11 +341,19 @@ local function BuildMessagePool(parent, y, pool, width)
 	presetBtn:SetPoint("LEFT", tagsBtn, "RIGHT", 6, 0)
 	y = y - 26
 
+	local rotateCB = CreateCheckbox(parent, "Rotate 16 random presets (ignores the list below)")
+	rotateCB:SetPoint("TOPLEFT", 18, y)
+	rotateCB:SetScript("OnClick", function(self)
+		poolCfg.rotating = self:GetChecked() and true or false
+	end)
+	y = y - 22
+
 	local scrollFrame, scrollChild = CreateNameList(parent, width, 90)
 	scrollFrame:SetPoint("TOPLEFT", 20, y)
 	y = y - 96
 
 	local function DoRefresh()
+		rotateCB:SetChecked(poolCfg.rotating)
 		RefreshNameRows(scrollChild, pool, function(msg)
 			for i, v in ipairs(pool) do
 				if v == msg then
@@ -422,6 +478,61 @@ local function StopRain(container)
 	end
 end
 
+-- Small circles drifting upward from the bottom, like bubbles rising
+-- through water -- a second, slower/sparser layer alongside the rain.
+local function SpawnBubbleInto(container)
+	local bubble = container:CreateTexture(nil, "ARTWORK")
+	bubble:SetTexture("Interface\\Glues\\CharacterCreate\\CharacterCreate-SoftEdge-Circle")
+	bubble:SetVertexColor(0.6, 0.9, 1)
+
+	local ag = bubble:CreateAnimationGroup()
+	local move = ag:CreateAnimation("Translation")
+	move:SetSmoothing("IN")
+
+	local function Reset()
+		local w = container:GetWidth()
+		local h = container:GetHeight()
+		local size = math.random(4, 10)
+		bubble:SetSize(size, size)
+		local x = math.random(0, math.max(1, math.floor(w)))
+		bubble:ClearAllPoints()
+		bubble:SetPoint("BOTTOM", container, "BOTTOMLEFT", x, -math.random(0, 40))
+		bubble:SetAlpha(math.random(20, 45) / 100)
+		move:SetOffset(0, h + 80)
+		move:SetDuration(math.random(280, 480) / 100)
+	end
+
+	ag:SetScript("OnFinished", function()
+		Reset()
+		ag:Play()
+	end)
+
+	Reset()
+	container.hailerBubbles = container.hailerBubbles or {}
+	table.insert(container.hailerBubbles, ag)
+end
+
+local function StartBubbles(container, count)
+	if not container.hailerBubbles then
+		for _ = 1, count do
+			SpawnBubbleInto(container)
+		end
+	end
+	for _, ag in ipairs(container.hailerBubbles) do
+		if not ag:IsPlaying() then
+			ag:Play()
+		end
+	end
+end
+
+local function StopBubbles(container)
+	if container.hailerBubbles then
+		for _, ag in ipairs(container.hailerBubbles) do
+			ag:Stop()
+		end
+	end
+end
+
 local function BuildCaustics(frame, width, height)
 	for _ = 1, 40 do
 		local blob = frame:CreateTexture(nil, "BORDER")
@@ -526,7 +637,7 @@ local function BuildWatchListSection(page, y)
 	addBtn:SetPoint("LEFT", input, "RIGHT", 8, 0)
 	y = y - 28
 
-	local scrollFrame, scrollChild = CreateNameList(page, 400, 90)
+	local scrollFrame, scrollChild = CreateNameList(page, CONTENT_WIDTH, 90)
 	scrollFrame:SetPoint("TOPLEFT", 0, y)
 
 	local function DoRefresh()
@@ -568,19 +679,19 @@ local function BuildScopePage(page, scopeKey)
 		local warn = CreateLabel(page, "Best-effort: WoW has no \"channel join\" event, so this greets the first message seen from each name per session.", true)
 		warn:SetPoint("TOPLEFT", 0, y)
 		warn:SetJustifyH("LEFT")
-		warn:SetWidth(480)
+		warn:SetWidth(CONTENT_WIDTH)
 		y = y - 26
 	elseif scopeKey == "community" then
 		local warn = CreateLabel(page, "Blizzard blocks addons from posting into Community chat automatically, so only the whisper below can be sent here.", true)
 		warn:SetPoint("TOPLEFT", 0, y)
 		warn:SetJustifyH("LEFT")
-		warn:SetWidth(480)
+		warn:SetWidth(CONTENT_WIDTH)
 		y = y - 26
 	elseif scopeKey == "friends" then
 		local warn = CreateLabel(page, "There is no chat channel for a friends list, so this scope can only whisper the friend who came online.", true)
 		warn:SetPoint("TOPLEFT", 0, y)
 		warn:SetJustifyH("LEFT")
-		warn:SetWidth(480)
+		warn:SetWidth(CONTENT_WIDTH)
 		y = y - 26
 	end
 
@@ -607,7 +718,7 @@ local function BuildScopePage(page, scopeKey)
 			HailerDB.scopes[scopeKey].announce.enabled = self:GetChecked() and true or false
 		end)
 		y = y - 24
-		y, refreshAnnouncePool = BuildMessagePool(page, y, HailerDB.scopes[scopeKey].announce.messages, 460)
+		y, refreshAnnouncePool = BuildMessagePool(page, y, HailerDB.scopes[scopeKey].announce)
 	end
 
 	local whisperCB = CreateCheckbox(page, "Whisper the person directly")
@@ -616,7 +727,7 @@ local function BuildScopePage(page, scopeKey)
 		HailerDB.scopes[scopeKey].whisper.enabled = self:GetChecked() and true or false
 	end)
 	y = y - 24
-	local y2, refreshWhisperPool = BuildMessagePool(page, y, HailerDB.scopes[scopeKey].whisper.messages, 460)
+	local y2, refreshWhisperPool = BuildMessagePool(page, y, HailerDB.scopes[scopeKey].whisper)
 	y = y2
 
 	local hint = CreateLabel(page, "Placeholders: {name}   {class}   {level}   {guild}   (or click Tags)", true)
@@ -682,7 +793,7 @@ local function BuildGuildTriggerSection(parent, subKey, onEnabledChanged)
 		Trigger().announce.enabled = self:GetChecked() and true or false
 	end)
 	y = y - 24
-	local y1, refreshAnnouncePool = BuildMessagePool(parent, y, Trigger().announce.messages, 460)
+	local y1, refreshAnnouncePool = BuildMessagePool(parent, y, Trigger().announce)
 	y = y1
 
 	local whisperCB = CreateCheckbox(parent, "Also whisper the person directly")
@@ -691,7 +802,7 @@ local function BuildGuildTriggerSection(parent, subKey, onEnabledChanged)
 		Trigger().whisper.enabled = self:GetChecked() and true or false
 	end)
 	y = y - 24
-	local y2, refreshWhisperPool = BuildMessagePool(parent, y, Trigger().whisper.messages, 460)
+	local y2, refreshWhisperPool = BuildMessagePool(parent, y, Trigger().whisper)
 	y = y2
 
 	local hint = CreateLabel(parent, "Placeholders: {name}   {class}   {level}   {guild}   (or click Tags)", true)
@@ -716,8 +827,8 @@ local function BuildGuildPage(page)
 	local subTabs = { { key = "newMember", label = "New Member" }, { key = "online", label = "Came Online" } }
 
 	local subNav = CreateFrame("Frame", nil, page)
-	subNav:SetPoint("TOPLEFT", 0, 0)
-	subNav:SetSize(400, 26)
+	subNav:SetPoint("TOP", 0, 0)
+	subNav:SetSize(#subTabs * 150 + (#subTabs - 1) * 8, 26)
 
 	local subContent = CreateFrame("Frame", nil, page)
 	subContent:SetPoint("TOPLEFT", 0, -34)
@@ -738,11 +849,22 @@ local function BuildGuildPage(page)
 	end
 
 	local function SelectSub(key)
+		-- page.Refresh() re-invokes this with the same key whenever the
+		-- Guild main tab is reselected, so only treat an actual sub-tab
+		-- change as "switching" (sound/fade) to avoid doubling up with the
+		-- main tab-switch sound.
+		local changed = activeSub ~= key
 		activeSub = key
+		if changed then
+			PlaySound(SOUNDKIT.IG_CHARACTER_INFO_TAB)
+		end
 		for k, sec in pairs(sections) do
 			sec:SetShown(k == key)
 			if k == key and sec.Refresh then
 				sec.Refresh()
+				if changed and UIFrameFadeIn then
+					UIFrameFadeIn(sec, 0.18, 0, 1)
+				end
 			end
 		end
 		for k, btn in pairs(buttons) do
@@ -778,7 +900,7 @@ local function BuildGeneralPage(page)
 	local intro = CreateLabel(page, "Hailer watches your guild, group, communities, and friends list, and greets people when they join or come online.", true)
 	intro:SetPoint("TOPLEFT", 0, -4)
 	intro:SetJustifyH("LEFT")
-	intro:SetWidth(480)
+	intro:SetWidth(CONTENT_WIDTH)
 
 	local minimapCB = CreateCheckbox(page, "Show minimap icon")
 	minimapCB:SetPoint("TOPLEFT", 0, -56)
@@ -808,18 +930,41 @@ local function BuildGeneralPage(page)
 	local allHint = CreateLabel(page, "(Party/Instance/Community/Custom/Friends only -- Guild's toggles live on the Guild tab and are never touched here.)", true)
 	allHint:SetPoint("TOPLEFT", 0, -118)
 	allHint:SetJustifyH("LEFT")
-	allHint:SetWidth(480)
+	allHint:SetWidth(CONTENT_WIDTH)
+
+	local batchCB = CreateCheckbox(page, "Combine quick successive joins into one greeting")
+	batchCB:SetPoint("TOPLEFT", 0, -150)
+	batchCB:SetScript("OnClick", function(self)
+		HailerDB.batching.enabled = self:GetChecked() and true or false
+	end)
+
+	local windowLabel = CreateLabel(page, "...if they join within")
+	windowLabel:SetPoint("TOPLEFT", 20, -176)
+	local windowBox = CreateNumberEditBox(page, 40)
+	windowBox:SetPoint("LEFT", windowLabel, "RIGHT", 6, 0)
+	windowBox:SetScript("OnEnterPressed", function(self)
+		local v = tonumber(self:GetText())
+		if v and v > 0 then
+			HailerDB.batching.window = math.min(30, math.floor(v))
+		end
+		self:SetText(tostring(HailerDB.batching.window))
+		self:ClearFocus()
+	end)
+	local windowLabel2 = CreateLabel(page, "seconds of each other (e.g. a raid zoning in together)")
+	windowLabel2:SetPoint("LEFT", windowBox, "RIGHT", 6, 0)
 
 	local statusHeader = CreateLabel(page, "Current status (also shown as a dot on each tab):")
-	statusHeader:SetPoint("TOPLEFT", 0, -134)
+	statusHeader:SetPoint("TOPLEFT", 0, -206)
 
 	local statusLabel = CreateLabel(page, "", true)
-	statusLabel:SetPoint("TOPLEFT", 4, -156)
+	statusLabel:SetPoint("TOPLEFT", 4, -228)
 	statusLabel:SetJustifyH("LEFT")
-	statusLabel:SetWidth(460)
+	statusLabel:SetWidth(CONTENT_WIDTH)
 
 	page.Refresh = function()
 		minimapCB:SetChecked(not HailerDB.minimap.hide)
+		batchCB:SetChecked(HailerDB.batching.enabled)
+		windowBox:SetText(tostring(HailerDB.batching.window))
 
 		local guild = HailerDB.scopes.guild
 		local lines = {
@@ -843,7 +988,7 @@ local function BuildIgnorePage(page)
 	local addBtn = CreateButton(page, "Add", 70, 22)
 	addBtn:SetPoint("LEFT", input, "RIGHT", 8, 0)
 
-	local scrollFrame, scrollChild = CreateNameList(page, 440, 420)
+	local scrollFrame, scrollChild = CreateNameList(page, CONTENT_WIDTH, 420)
 	scrollFrame:SetPoint("TOPLEFT", 0, -64)
 
 	local function DoRefresh()
@@ -895,6 +1040,7 @@ function ns:UpdateNavIndicators()
 end
 
 function ns:SelectTab(key)
+	local changed = ns.activeTab ~= key
 	ns.activeTab = key
 	for _, page in pairs(ns.pages) do
 		page:Hide()
@@ -905,6 +1051,14 @@ function ns:SelectTab(key)
 		if page.Refresh then
 			page.Refresh()
 		end
+		if changed and UIFrameFadeIn then
+			UIFrameFadeIn(page, 0.18, 0, 1)
+		end
+	end
+	-- Guarded on IsShown so this doesn't double up with the frame's own
+	-- open sound during the initial SelectTab("general") in BuildGUI.
+	if changed and ns.frame and ns.frame:IsShown() then
+		PlaySound(SOUNDKIT.IG_CHARACTER_INFO_TAB)
 	end
 	for k, btn in pairs(ns.navButtons) do
 		if k == key then
@@ -923,7 +1077,7 @@ function ns:RefreshGUI()
 end
 
 function ns:BuildGUI()
-	local WIDTH, HEIGHT = 780, 680
+	local WIDTH, HEIGHT = 780, 820
 
 	local frame = CreateFrame("Frame", "HailerFrame", UIParent, "BackdropTemplate")
 	frame:SetSize(WIDTH, HEIGHT)
@@ -962,6 +1116,15 @@ function ns:BuildGUI()
 	titleIcon:SetTexture("Interface\\Icons\\INV_Elemental_Mote_Water01")
 	titleIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
 
+	-- Idle bob, like a droplet bouncing in place.
+	local bobAG = titleIcon:CreateAnimationGroup()
+	bobAG:SetLooping("BOUNCE")
+	local bob = bobAG:CreateAnimation("Translation")
+	bob:SetOffset(0, 4)
+	bob:SetDuration(1.4)
+	bob:SetSmoothing("IN_OUT")
+	bobAG:Play()
+
 	local title = frame:CreateFontString(nil, "OVERLAY")
 	title:SetFont(AGAVE_BOLD, 30, "")
 	title:SetTextColor(0.4, 0.85, 1)
@@ -984,10 +1147,19 @@ function ns:BuildGUI()
 
 	frame:SetScript("OnShow", function()
 		StartRain(rainLayer, 20)
+		StartBubbles(rainLayer, 12)
 		PlaySound(SOUNDKIT.IG_MAINMENU_OPEN)
+		PlayRipple(frame, 0, 30)
+		frame:SetAlpha(0)
+		if UIFrameFadeIn then
+			UIFrameFadeIn(frame, 0.22, 0, 1)
+		else
+			frame:SetAlpha(1)
+		end
 	end)
 	frame:SetScript("OnHide", function()
 		StopRain(rainLayer)
+		StopBubbles(rainLayer)
 		PlaySound(SOUNDKIT.IG_MAINMENU_CLOSE)
 		if presetMenu then
 			presetMenu:Hide()
@@ -997,13 +1169,22 @@ function ns:BuildGUI()
 		end
 	end)
 
+	-- Centered horizontal tab bar (4 columns x 2 rows) instead of a left
+	-- sidebar, so the whole window reads as one centered composition.
+	local NAV_COLS = 4
+	local NAV_BTN_W, NAV_BTN_H, NAV_GAP = 174, 30, 8
+	local navRows = math.ceil(#TABS / NAV_COLS)
+	local navWidth = NAV_COLS * NAV_BTN_W + (NAV_COLS - 1) * NAV_GAP
+	local navHeight = navRows * NAV_BTN_H + (navRows - 1) * NAV_GAP
+	local NAV_TOP_OFFSET = 66
+
 	local nav = CreateFrame("Frame", nil, frame)
-	nav:SetPoint("TOPLEFT", 16, -70)
-	nav:SetSize(170, 570)
+	nav:SetPoint("TOP", frame, "TOP", 0, -NAV_TOP_OFFSET)
+	nav:SetSize(navWidth, navHeight)
 
 	local navPanel = frame:CreateTexture(nil, "BORDER")
-	navPanel:SetPoint("TOPLEFT", nav, "TOPLEFT", -8, 8)
-	navPanel:SetPoint("BOTTOMRIGHT", nav, "BOTTOMRIGHT", 8, -8)
+	navPanel:SetPoint("TOPLEFT", nav, "TOPLEFT", -10, 10)
+	navPanel:SetPoint("BOTTOMRIGHT", nav, "BOTTOMRIGHT", 10, -10)
 	navPanel:SetColorTexture(0.01, 0.05, 0.10, 0.42)
 
 	local navButtons = {}
@@ -1011,14 +1192,16 @@ function ns:BuildGUI()
 	for i, tab in ipairs(TABS) do
 		local btn = CreateTabButton(nav, tab.label, function()
 			ns:SelectTab(tab.key)
-		end, 168, tab.icon)
-		btn:SetPoint("TOPLEFT", 0, -(i - 1) * 32)
+		end, NAV_BTN_W, tab.icon)
+		local col = (i - 1) % NAV_COLS
+		local row = math.floor((i - 1) / NAV_COLS)
+		btn:SetPoint("TOPLEFT", col * (NAV_BTN_W + NAV_GAP), -row * (NAV_BTN_H + NAV_GAP))
 		navButtons[tab.key] = btn
 	end
 
 	local content = CreateFrame("Frame", nil, frame)
-	content:SetPoint("TOPLEFT", nav, "TOPRIGHT", 16, 0)
-	content:SetPoint("BOTTOMRIGHT", -16, 16)
+	content:SetPoint("TOPLEFT", frame, "TOPLEFT", 30, -(NAV_TOP_OFFSET + navHeight + 16))
+	content:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -30, 16)
 
 	local contentPanel = frame:CreateTexture(nil, "BORDER")
 	contentPanel:SetPoint("TOPLEFT", content, "TOPLEFT", -8, 8)

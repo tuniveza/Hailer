@@ -194,18 +194,24 @@ ns.PRESET_MESSAGES = {
 	"Welcome, {name}! Here's to your first of many adventures with us.",
 }
 
-local function NewTriggerConfig(enabled, chance, announceOn, announceMsgs, whisperOn, whisperMsgs)
+local function NewTriggerConfig(enabled, chance, announceOn, announceMsgs, whisperOn, whisperMsgs, announceRotating, whisperRotating)
 	return {
 		enabled = enabled,
 		chance = chance,
-		announce = { enabled = announceOn, messages = announceMsgs },
-		whisper = { enabled = whisperOn, messages = whisperMsgs },
+		announce = { enabled = announceOn, messages = announceMsgs, rotating = announceRotating or false },
+		whisper = { enabled = whisperOn, messages = whisperMsgs, rotating = whisperRotating or false },
 	}
 end
 
 -- Quiet by default: out of the box, Hailer only welcomes brand new guild
 -- members ("guild invites"). Every other scope -- and the guild "came back
 -- online" trigger -- is off until explicitly switched on in the GUI.
+-- How many random presets stay "in rotation" at once. This batch of 16 is
+-- redrawn from the full PRESET_MESSAGES library on every /reload, and again
+-- mid-session once every message in the current batch has been sent at
+-- least once (see RollRotatingPresetBatch/NextRotatingPreset below).
+ns.ROTATING_POOL_SIZE = 16
+
 local DEFAULTS = {
 	minimap = {
 		hide = false,
@@ -213,32 +219,46 @@ local DEFAULTS = {
 	},
 	ignoreList = {},
 	knownGuildGUIDs = {},
+	rotatingPresets = {
+		pool = {},
+		queue = {},
+	},
+	-- When several people trigger the same greeting within a short window
+	-- (e.g. a whole raid group zoning in together), combine their names into
+	-- one announcement instead of posting one line per person.
+	batching = {
+		enabled = true,
+		window = 4,
+	},
 	scopes = {
 		party = {
 			label = "Party / Raid",
 			enabled = false,
 			cooldown = 300,
 			chance = 100,
-			announce = { enabled = true, messages = { "Welcome to the group, {name}! o/" } },
-			whisper = { enabled = false, messages = { "Hey {name}, welcome to the group!" } },
+			announce = { enabled = true, messages = { "Welcome to the group, {name}! o/" }, rotating = false },
+			whisper = { enabled = false, messages = { "Hey {name}, welcome to the group!" }, rotating = false },
 		},
 		instance = {
 			label = "Instance Group (Dungeon/Raid/M+)",
 			enabled = false,
 			cooldown = 300,
 			chance = 100,
-			announce = { enabled = false, messages = { "Welcome aboard, {name}! Good luck out there." } },
-			whisper = { enabled = false, messages = { "Welcome aboard, {name}! Good luck out there." } },
+			announce = { enabled = false, messages = { "Welcome aboard, {name}! Good luck out there." }, rotating = false },
+			whisper = { enabled = false, messages = { "Welcome aboard, {name}! Good luck out there." }, rotating = false },
 		},
 		guild = {
 			label = "Guild",
 			enabled = true,
 			cooldown = 1800,
 			triggers = {
+				-- On by default, and seeded with the rotating-preset engine so a
+				-- fresh install immediately shows off the 16-random-preset feature.
 				newMember = NewTriggerConfig(
 					true, 100,
 					true, { "Everyone welcome {name} to the guild!" },
-					true, { "Welcome to the guild, {name}! Let us know if you have any questions." }
+					true, { "Welcome to the guild, {name}! Let us know if you have any questions." },
+					true, true
 				),
 				online = NewTriggerConfig(
 					false, 60,
@@ -252,8 +272,8 @@ local DEFAULTS = {
 			enabled = false,
 			cooldown = 900,
 			chance = 70,
-			announce = { enabled = false, messages = { "Welcome, {name}! Glad to have you here." } },
-			whisper = { enabled = false, messages = { "Welcome to the community, {name}!" } },
+			announce = { enabled = false, messages = { "Welcome, {name}! Glad to have you here." }, rotating = false },
+			whisper = { enabled = false, messages = { "Welcome to the community, {name}!" }, rotating = false },
 		},
 		custom = {
 			label = "Custom Channels",
@@ -261,16 +281,16 @@ local DEFAULTS = {
 			cooldown = 900,
 			chance = 50,
 			watchList = {},
-			announce = { enabled = true, messages = { "Ahoy {name}, welcome!" } },
-			whisper = { enabled = false, messages = { "Ahoy {name}, welcome!" } },
+			announce = { enabled = true, messages = { "Ahoy {name}, welcome!" }, rotating = false },
+			whisper = { enabled = false, messages = { "Ahoy {name}, welcome!" }, rotating = false },
 		},
 		friends = {
 			label = "Friends",
 			enabled = false,
 			cooldown = 1200,
 			chance = 70,
-			announce = { enabled = false, messages = { "Ahoy {name}, good to see you online!" } },
-			whisper = { enabled = false, messages = { "Ahoy {name}, good to see you online!" } },
+			announce = { enabled = false, messages = { "Ahoy {name}, good to see you online!" }, rotating = false },
+			whisper = { enabled = false, messages = { "Ahoy {name}, good to see you online!" }, rotating = false },
 		},
 	},
 }
@@ -321,6 +341,66 @@ local function PickMessage(pool)
 	return pool[math.random(#pool)]
 end
 ns.PickMessage = PickMessage
+
+--------------------------------------------------------------------
+-- Rotating preset engine: keeps a shared batch of 16 random messages
+-- drawn from the 160-strong PRESET_MESSAGES library. Any message pool can
+-- opt into it (per-pool "rotating" toggle in the GUI) instead of using its
+-- own manually curated list. The batch is redrawn from scratch -- a fresh
+-- random 16, not just a reshuffle of the old 16 -- on every /reload, and
+-- again the moment every message in the current batch has gone out at
+-- least once, so the rotation never gets predictable or stale.
+--------------------------------------------------------------------
+
+local function ShuffledIndices(n)
+	local t = {}
+	for i = 1, n do
+		t[i] = i
+	end
+	for i = n, 2, -1 do
+		local j = math.random(i)
+		t[i], t[j] = t[j], t[i]
+	end
+	return t
+end
+
+function ns:RollRotatingPresetBatch()
+	local total = #ns.PRESET_MESSAGES
+	local count = math.min(ns.ROTATING_POOL_SIZE, total)
+	local order = ShuffledIndices(total)
+	local pool = {}
+	for i = 1, count do
+		pool[i] = ns.PRESET_MESSAGES[order[i]]
+	end
+	HailerDB.rotatingPresets.pool = pool
+	HailerDB.rotatingPresets.queue = ShuffledIndices(count)
+end
+
+-- Pops the next not-yet-used message out of the current batch, rolling a
+-- brand new batch first if there isn't one yet or the current one has been
+-- fully used.
+function ns:NextRotatingPreset()
+	local rp = HailerDB.rotatingPresets
+	if not rp.pool or #rp.pool == 0 or not rp.queue or #rp.queue == 0 then
+		ns:RollRotatingPresetBatch()
+		rp = HailerDB.rotatingPresets
+	end
+	local idx = table.remove(rp.queue)
+	return rp.pool[idx]
+end
+
+-- Picks a message for one announce/whisper pool, honoring its "rotating"
+-- toggle (drawn from the shared rotating batch) vs. its own message list.
+local function PickPoolMessage(poolCfg)
+	if not poolCfg then
+		return nil
+	end
+	if poolCfg.rotating then
+		return ns:NextRotatingPreset()
+	end
+	return PickMessage(poolCfg.messages)
+end
+ns.PickPoolMessage = PickPoolMessage
 
 local function FormatMsg(msg, name, extra)
 	extra = extra or {}
@@ -443,9 +523,116 @@ function ns:SendGreeting(scopeKey, targetFullName, displayName, extra, subKey)
 	extra = extra or {}
 
 	if trigger.coordinate and extra.guid and IsInGuild() and ns.GuildSync then
+		-- Coordinated (cross-client) greets already go through an async
+		-- election on GuildSync; batching that too would mean waiting on
+		-- multiple in-flight elections to land together, so those still
+		-- dispatch one at a time as soon as each election is won.
 		ns.GuildSync:StartElection(scopeKey, targetFullName, displayName, extra, subKey)
+	elseif HailerDB.batching and HailerDB.batching.enabled then
+		ns:QueueGreetForBatch(scopeKey, subKey, targetFullName, displayName, extra)
 	else
 		ns:DispatchGreeting(scopeKey, targetFullName, displayName, extra, subKey)
+	end
+end
+
+--------------------------------------------------------------------
+-- Quick-succession batching: several people joining within a short window
+-- (a raid zoning in, a batch of guild invites) get folded into a single
+-- combined announcement instead of one chat line per person. Whispers stay
+-- one-per-person (they're private, so there's no "spam" to combine), but
+-- still wait for the window to close so a lone joiner isn't whispered
+-- ahead of a combined announce that ends up including them.
+--------------------------------------------------------------------
+
+local pendingBatches = {}
+
+local function JoinNames(names)
+	local n = #names
+	if n == 1 then
+		return names[1]
+	elseif n == 2 then
+		return names[1] .. " and " .. names[2]
+	end
+	return table.concat(names, ", ", 1, n - 1) .. ", and " .. names[n]
+end
+ns.JoinNames = JoinNames
+
+-- Combined form of DispatchGreeting for 2+ people batched together. Since a
+-- single {name} placeholder can't represent a group, the announce message
+-- gets the joined name list in place of {name} and blank {class}/{level}
+-- (those are only meaningful for one person). Whispers are still sent
+-- individually, each with its own name/class/level intact.
+function ns:DispatchCombinedGreeting(scopeKey, subKey, entries)
+	local scopeCfg = HailerDB.scopes[scopeKey]
+	local trigger = (subKey and scopeCfg.triggers and scopeCfg.triggers[subKey]) or scopeCfg
+
+	if not ns.WHISPER_ONLY_SCOPES[scopeKey] and trigger.announce.enabled then
+		local msg = PickPoolMessage(trigger.announce)
+		if msg then
+			local names = {}
+			for _, entry in ipairs(entries) do
+				table.insert(names, entry.displayName)
+			end
+			local text = FormatMsg(msg, JoinNames(names), {})
+			if scopeKey == "guild" then
+				QueueChatMessage(text, "GUILD")
+			elseif scopeKey == "custom" then
+				for _, entry in ipairs(entries) do
+					if entry.extra.channelIndex then
+						QueueChatMessage(text, "CHANNEL", nil, entry.extra.channelIndex)
+						break
+					end
+				end
+			else
+				QueueChatMessage(text, IsInRaid() and "RAID" or "PARTY")
+			end
+		end
+	end
+
+	if trigger.whisper.enabled then
+		for _, entry in ipairs(entries) do
+			local msg = PickPoolMessage(trigger.whisper)
+			if msg then
+				QueueChatMessage(FormatMsg(msg, entry.displayName, entry.extra), "WHISPER", entry.targetFullName)
+			end
+		end
+	end
+
+	if ns.PlayGreetSplash then
+		ns:PlayGreetSplash()
+	end
+end
+
+local function FlushGreetBatch(scopeKey, subKey, entries)
+	if #entries == 1 then
+		local e = entries[1]
+		ns:DispatchGreeting(scopeKey, e.targetFullName, e.displayName, e.extra, subKey)
+	else
+		ns:DispatchCombinedGreeting(scopeKey, subKey, entries)
+	end
+end
+
+-- Custom-channel batches are further split by channelIndex so two
+-- different watched channels never get merged into one announcement.
+function ns:QueueGreetForBatch(scopeKey, subKey, targetFullName, displayName, extra)
+	local batchKey = scopeKey .. ":" .. (subKey or "") .. ":" .. (extra.channelIndex or "")
+	local batch = pendingBatches[batchKey]
+	if not batch then
+		batch = { entries = {} }
+		pendingBatches[batchKey] = batch
+	end
+	table.insert(batch.entries, {
+		targetFullName = targetFullName,
+		displayName = displayName,
+		extra = extra,
+	})
+
+	if not batch.timer then
+		local window = (HailerDB.batching and HailerDB.batching.window) or 4
+		batch.timer = C_Timer.NewTimer(window, function()
+			pendingBatches[batchKey] = nil
+			FlushGreetBatch(scopeKey, subKey, batch.entries)
+		end)
 	end
 end
 
@@ -461,7 +648,7 @@ function ns:DispatchGreeting(scopeKey, targetFullName, displayName, extra, subKe
 	-- channel exists, or the send API is protected and only works in direct
 	-- response to a hardware event) -- those scopes only ever whisper.
 	if not ns.WHISPER_ONLY_SCOPES[scopeKey] and trigger.announce.enabled then
-		local msg = PickMessage(trigger.announce.messages)
+		local msg = PickPoolMessage(trigger.announce)
 		if msg then
 			local text = FormatMsg(msg, displayName, extra)
 			if scopeKey == "guild" then
@@ -477,7 +664,7 @@ function ns:DispatchGreeting(scopeKey, targetFullName, displayName, extra, subKe
 	end
 
 	if trigger.whisper.enabled then
-		local msg = PickMessage(trigger.whisper.messages)
+		local msg = PickPoolMessage(trigger.whisper)
 		if msg then
 			QueueChatMessage(FormatMsg(msg, displayName, extra), "WHISPER", targetFullName)
 		end
@@ -634,16 +821,47 @@ local function UpdateGuildRoster()
 	end
 end
 
-local guildPending = false
-local function OnGuildEvent()
-	if guildPending then
-		return
+-- GUILD_ROSTER_UPDATE can fire many times in quick succession during a
+-- burst of guild activity (several people coming online, joining, etc. in
+-- the same few seconds) as Blizzard's client catches up on roster data. A
+-- naive "wait 0.8s after the first event, then scan once" debounce can fire
+-- that one scan before a given change (e.g. a brand new member) has fully
+-- landed, silently missing them for the rest of the session. This instead
+-- resets the settle timer on every event (a true debounce), so the scan
+-- only runs once things go quiet -- capped at GUILD_EVENT_MAX_WAIT so a
+-- guild with nonstop traffic doesn't starve it forever -- and follows up
+-- with one more scan a couple seconds later as a safety net.
+local GUILD_EVENT_SETTLE = 0.8
+local GUILD_EVENT_MAX_WAIT = 3
+local GUILD_EVENT_CATCHUP = 2.5
+
+local guildEventTimer
+local guildBurstStart
+local guildCatchupTimer
+
+local function FlushGuildEvent()
+	guildEventTimer = nil
+	guildBurstStart = nil
+	UpdateGuildRoster()
+	if not guildCatchupTimer then
+		guildCatchupTimer = C_Timer.NewTimer(GUILD_EVENT_CATCHUP, function()
+			guildCatchupTimer = nil
+			UpdateGuildRoster()
+		end)
 	end
-	guildPending = true
-	C_Timer.After(0.8, function()
-		guildPending = false
-		UpdateGuildRoster()
-	end)
+end
+
+local function OnGuildEvent()
+	local now = GetTime()
+	guildBurstStart = guildBurstStart or now
+
+	if guildEventTimer then
+		guildEventTimer:Cancel()
+	end
+
+	local elapsed = now - guildBurstStart
+	local wait = math.min(GUILD_EVENT_SETTLE, math.max(0.1, GUILD_EVENT_MAX_WAIT - elapsed))
+	guildEventTimer = C_Timer.NewTimer(wait, FlushGuildEvent)
 end
 
 --------------------------------------------------------------------
@@ -662,6 +880,10 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
 		end
 		ApplyDefaults(HailerDB, DEFAULTS)
 		ns.db = HailerDB
+
+		-- Fresh random 16-message batch every /reload (PLAYER_LOGIN fires on
+		-- every UI reload, not just the first login of a session).
+		ns:RollRotatingPresetBatch()
 
 		if IsInGuild() then
 			C_GuildInfo.GuildRoster()
