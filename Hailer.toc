@@ -1,0 +1,17 @@
+## Interface: 120100, 120005, 120007
+## Title: Hailer
+## Notes: A watery-themed automatic greeter. Welcomes whoever joins your party, raid, instance group, guild, or communities, with customizable per-channel messages.
+## Author: Hailer
+## Version: 1.0.0
+## SavedVariables: HailerDB
+## IconTexture: Interface\Icons\Spell_Nature_WaterBolt
+## AddonCompartmentFunc: Hailer_OnAddonCompartmentClick
+## AddonCompartmentFuncOnEnter: Hailer_OnAddonCompartmentEnter
+## AddonCompartmentFuncOnLeave: Hailer_OnAddonCompartmentLeave
+
+Core.lua
+Community.lua
+Friends.lua
+ChannelScan.lua
+GUI.lua
+Minimap.lua
