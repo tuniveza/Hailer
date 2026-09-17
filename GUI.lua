@@ -189,7 +189,10 @@ end
 --------------------------------------------------------------------
 
 local presetMenu
+local tagMenu
 
+-- A scrollable dropdown of preset messages (160 of them -- far too many for
+-- an unbounded popup, hence the scroll frame).
 local function GetPresetMenu()
 	if presetMenu then
 		return presetMenu
@@ -203,17 +206,26 @@ local function GetPresetMenu()
 	})
 	menu:SetBackdropColor(0.02, 0.08, 0.14, 0.97)
 	menu:SetBackdropBorderColor(0.3, 0.75, 0.95, 1)
-	menu:SetSize(300, #ns.PRESET_MESSAGES * 20 + 16)
+	menu:SetSize(340, 380)
 	menu:Hide()
 	menu:SetFrameLevel(100)
 
+	local scrollFrame = CreateFrame("ScrollFrame", nil, menu, "UIPanelScrollFrameTemplate")
+	scrollFrame:SetPoint("TOPLEFT", 10, -10)
+	scrollFrame:SetPoint("BOTTOMRIGHT", -28, 10)
+	local scrollChild = CreateFrame("Frame", nil, scrollFrame)
+	scrollChild:SetSize(290, #ns.PRESET_MESSAGES * 20)
+	scrollFrame:SetScrollChild(scrollChild)
+
 	menu.rows = {}
 	for i, text in ipairs(ns.PRESET_MESSAGES) do
-		local row = CreateFrame("Button", nil, menu)
-		row:SetSize(280, 20)
-		row:SetPoint("TOP", 0, -8 - (i - 1) * 20)
+		local row = CreateFrame("Button", nil, scrollChild)
+		row:SetSize(290, 20)
+		row:SetPoint("TOPLEFT", 0, -(i - 1) * 20)
 		local fs = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 		fs:SetPoint("LEFT", 4, 0)
+		fs:SetPoint("RIGHT", -4, 0)
+		fs:SetJustifyH("LEFT")
 		fs:SetText(text)
 		fs:SetTextColor(0.8, 0.92, 1)
 		row:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
@@ -225,15 +237,60 @@ local function GetPresetMenu()
 	return menu
 end
 
+local TAG_DEFS = {
+	{ tag = "{name}", desc = "Character name" },
+	{ tag = "{class}", desc = "Class (colored)" },
+	{ tag = "{level}", desc = "Level" },
+	{ tag = "{guild}", desc = "Your guild's name" },
+}
+
+-- Inserts a placeholder token into whichever input box asked for the menu,
+-- at the cursor position, so nobody has to remember/type {name}-style syntax.
+local function GetTagMenu()
+	if tagMenu then
+		return tagMenu
+	end
+	local menu = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
+	menu:SetFrameStrata("TOOLTIP")
+	menu:SetBackdrop({
+		bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+		edgeSize = 12,
+	})
+	menu:SetBackdropColor(0.02, 0.08, 0.14, 0.97)
+	menu:SetBackdropBorderColor(0.3, 0.75, 0.95, 1)
+	menu:SetSize(230, #TAG_DEFS * 22 + 16)
+	menu:Hide()
+	menu:SetFrameLevel(100)
+
+	menu.rows = {}
+	for i, def in ipairs(TAG_DEFS) do
+		local row = CreateFrame("Button", nil, menu)
+		row:SetSize(210, 22)
+		row:SetPoint("TOP", 0, -8 - (i - 1) * 22)
+		local fs = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		fs:SetPoint("LEFT", 4, 0)
+		fs:SetText("|cff55e0ff" .. def.tag .. "|r  " .. def.desc)
+		row:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
+		row.tag = def.tag
+		menu.rows[i] = row
+	end
+
+	tagMenu = menu
+	return menu
+end
+
 local function BuildMessagePool(parent, y, pool, width)
 	width = width or 460
 
-	local input = CreateEditBox(parent, width - 140)
+	local input = CreateEditBox(parent, width - 174)
 	input:SetPoint("TOPLEFT", 20, y)
-	local addBtn = CreateButton(parent, "Add", 50, 22)
+	local addBtn = CreateButton(parent, "Add", 44, 22)
 	addBtn:SetPoint("LEFT", input, "RIGHT", 6, 0)
-	local presetBtn = CreateButton(parent, "Presets", 66, 22)
-	presetBtn:SetPoint("LEFT", addBtn, "RIGHT", 6, 0)
+	local tagsBtn = CreateButton(parent, "Tags", 48, 22)
+	tagsBtn:SetPoint("LEFT", addBtn, "RIGHT", 6, 0)
+	local presetBtn = CreateButton(parent, "Presets", 60, 22)
+	presetBtn:SetPoint("LEFT", tagsBtn, "RIGHT", 6, 0)
 	y = y - 26
 
 	local scrollFrame, scrollChild = CreateNameList(parent, width, 90)
@@ -285,6 +342,25 @@ local function BuildMessagePool(parent, y, pool, width)
 		menu.owner = presetBtn
 		menu:ClearAllPoints()
 		menu:SetPoint("TOPLEFT", presetBtn, "BOTTOMLEFT", 0, -2)
+		menu:Show()
+	end)
+
+	tagsBtn:SetScript("OnClick", function()
+		local menu = GetTagMenu()
+		if menu:IsShown() and menu.owner == tagsBtn then
+			menu:Hide()
+			return
+		end
+		for _, row in ipairs(menu.rows) do
+			row:SetScript("OnClick", function()
+				input:Insert(row.tag)
+				input:SetFocus()
+				menu:Hide()
+			end)
+		end
+		menu.owner = tagsBtn
+		menu:ClearAllPoints()
+		menu:SetPoint("TOPLEFT", tagsBtn, "BOTTOMLEFT", 0, -2)
 		menu:Show()
 	end)
 
@@ -347,14 +423,14 @@ local function StopRain(container)
 end
 
 local function BuildCaustics(frame, width, height)
-	for _ = 1, 26 do
+	for _ = 1, 40 do
 		local blob = frame:CreateTexture(nil, "BORDER")
 		blob:SetTexture("Interface\\Glues\\CharacterCreate\\CharacterCreate-SoftEdge-Circle")
-		local size = math.random(60, 170)
+		local size = math.random(50, 170)
 		blob:SetSize(size, size)
 		blob:SetPoint("CENTER", frame, "TOPLEFT", math.random(0, width), -math.random(0, height))
 		local shade = math.random(60, 100) / 100
-		blob:SetVertexColor(0.12 * shade, 0.4 * shade, 0.55 * shade, math.random(6, 15) / 100)
+		blob:SetVertexColor(0.15 * shade, 0.5 * shade, 0.68 * shade, math.random(10, 24) / 100)
 	end
 end
 
@@ -543,7 +619,7 @@ local function BuildScopePage(page, scopeKey)
 	local y2, refreshWhisperPool = BuildMessagePool(page, y, HailerDB.scopes[scopeKey].whisper.messages, 460)
 	y = y2
 
-	local hint = CreateLabel(page, "Placeholders: {name}   {class}   {level}", true)
+	local hint = CreateLabel(page, "Placeholders: {name}   {class}   {level}   {guild}   (or click Tags)", true)
 	hint:SetPoint("TOPLEFT", 20, y)
 	y = y - 22
 
@@ -618,7 +694,7 @@ local function BuildGuildTriggerSection(parent, subKey, onEnabledChanged)
 	local y2, refreshWhisperPool = BuildMessagePool(parent, y, Trigger().whisper.messages, 460)
 	y = y2
 
-	local hint = CreateLabel(parent, "Placeholders: {name}   {class}   {level}", true)
+	local hint = CreateLabel(parent, "Placeholders: {name}   {class}   {level}   {guild}   (or click Tags)", true)
 	hint:SetPoint("TOPLEFT", 20, y)
 
 	parent.Refresh = function()
@@ -870,8 +946,6 @@ function ns:BuildGUI()
 	bg:SetPoint("BOTTOMRIGHT", -4, 4)
 	bg:SetGradient("VERTICAL", CreateColor(0.02, 0.10, 0.18, 0.97), CreateColor(0.05, 0.22, 0.30, 0.97))
 
-	BuildCaustics(frame, WIDTH, HEIGHT)
-
 	local titleBanner = frame:CreateTexture(nil, "BORDER")
 	titleBanner:SetPoint("TOPLEFT", 4, -4)
 	titleBanner:SetPoint("TOPRIGHT", -4, -4)
@@ -918,6 +992,9 @@ function ns:BuildGUI()
 		if presetMenu then
 			presetMenu:Hide()
 		end
+		if tagMenu then
+			tagMenu:Hide()
+		end
 	end)
 
 	local nav = CreateFrame("Frame", nil, frame)
@@ -947,6 +1024,11 @@ function ns:BuildGUI()
 	contentPanel:SetPoint("TOPLEFT", content, "TOPLEFT", -8, 8)
 	contentPanel:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT", 8, -8)
 	contentPanel:SetColorTexture(0.01, 0.05, 0.10, 0.3)
+
+	-- Drawn AFTER the nav/content panel fills (same frame, same draw layer)
+	-- so the caustic texture actually shows on top of them instead of being
+	-- hidden underneath a flat color.
+	BuildCaustics(frame, WIDTH, HEIGHT)
 
 	local pages = {}
 	ns.pages = pages
