@@ -567,6 +567,16 @@ local function BuildGuildTriggerSection(parent, subKey)
 		function(v) Trigger().chance = v end)
 	y = newY
 
+	local coordinateCB
+	if subKey == "online" then
+		coordinateCB = CreateCheckbox(parent, "Coordinate with other Hailer users (only one guildmate greets)")
+		coordinateCB:SetPoint("TOPLEFT", 0, y)
+		coordinateCB:SetScript("OnClick", function(self)
+			Trigger().coordinate = self:GetChecked() and true or false
+		end)
+		y = y - 26
+	end
+
 	local announceCB = CreateCheckbox(parent, "Announce publicly in guild chat")
 	announceCB:SetPoint("TOPLEFT", 0, y)
 	announceCB:SetScript("OnClick", function(self)
@@ -592,6 +602,9 @@ local function BuildGuildTriggerSection(parent, subKey)
 		local trigger = Trigger()
 		enableCB:SetChecked(trigger.enabled)
 		refreshChance()
+		if coordinateCB then
+			coordinateCB:SetChecked(trigger.coordinate)
+		end
 		announceCB:SetChecked(trigger.announce.enabled)
 		refreshAnnouncePool()
 		whisperCB:SetChecked(trigger.whisper.enabled)

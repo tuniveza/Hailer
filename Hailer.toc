@@ -10,6 +10,7 @@
 ## AddonCompartmentFuncOnLeave: Hailer_OnAddonCompartmentLeave
 
 Core.lua
+GuildSync.lua
 Community.lua
 Friends.lua
 ChannelScan.lua

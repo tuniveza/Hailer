@@ -30,15 +30,18 @@ ns.PRESET_MESSAGES = {
 	"Dock the ship, {name} is here!",
 }
 
-local function NewTriggerConfig(chance, announceOn, announceMsgs, whisperOn, whisperMsgs)
+local function NewTriggerConfig(enabled, chance, announceOn, announceMsgs, whisperOn, whisperMsgs)
 	return {
-		enabled = true,
+		enabled = enabled,
 		chance = chance,
 		announce = { enabled = announceOn, messages = announceMsgs },
 		whisper = { enabled = whisperOn, messages = whisperMsgs },
 	}
 end
 
+-- Quiet by default: out of the box, Hailer only welcomes brand new guild
+-- members ("guild invites"). Every other scope -- and the guild "came back
+-- online" trigger -- is off until explicitly switched on in the GUI.
 local DEFAULTS = {
 	minimap = {
 		hide = false,
@@ -49,7 +52,7 @@ local DEFAULTS = {
 	scopes = {
 		party = {
 			label = "Party / Raid",
-			enabled = true,
+			enabled = false,
 			cooldown = 300,
 			chance = 100,
 			announce = { enabled = true, messages = { "Welcome to the group, {name}! o/" } },
@@ -66,15 +69,15 @@ local DEFAULTS = {
 		guild = {
 			label = "Guild",
 			enabled = true,
-			cooldown = 900,
+			cooldown = 1800,
 			triggers = {
 				newMember = NewTriggerConfig(
-					100,
+					true, 100,
 					true, { "Everyone welcome {name} to the guild!" },
 					true, { "Welcome to the guild, {name}! Let us know if you have any questions." }
 				),
 				online = NewTriggerConfig(
-					60,
+					false, 60,
 					false, { "Ahoy, {name} has sailed back into port!" },
 					false, { "Welcome back, {name}!" }
 				),
@@ -82,11 +85,11 @@ local DEFAULTS = {
 		},
 		community = {
 			label = "Communities",
-			enabled = true,
+			enabled = false,
 			cooldown = 900,
 			chance = 70,
 			announce = { enabled = false, messages = { "Welcome, {name}! Glad to have you here." } },
-			whisper = { enabled = true, messages = { "Welcome to the community, {name}!" } },
+			whisper = { enabled = false, messages = { "Welcome to the community, {name}!" } },
 		},
 		custom = {
 			label = "Custom Channels",
@@ -103,11 +106,12 @@ local DEFAULTS = {
 			cooldown = 1200,
 			chance = 70,
 			announce = { enabled = false, messages = { "Ahoy {name}, good to see you online!" } },
-			whisper = { enabled = true, messages = { "Ahoy {name}, good to see you online!" } },
+			whisper = { enabled = false, messages = { "Ahoy {name}, good to see you online!" } },
 		},
 	},
 }
 ns.DEFAULTS = DEFAULTS
+DEFAULTS.scopes.guild.triggers.online.coordinate = true
 
 local function IsArray(t)
 	return t[1] ~= nil
@@ -267,7 +271,24 @@ function ns:SendGreeting(scopeKey, targetFullName, displayName, extra, subKey)
 		return
 	end
 
+	-- This client has decided it WOULD greet -- consume the cooldown now so
+	-- a suppressed (lost election) attempt doesn't retry immediately.
 	lastGreeted[cooldownKey] = GetTime()
+	extra = extra or {}
+
+	if trigger.coordinate and extra.guid and IsInGuild() and ns.GuildSync then
+		ns.GuildSync:StartElection(scopeKey, targetFullName, displayName, extra, subKey)
+	else
+		ns:DispatchGreeting(scopeKey, targetFullName, displayName, extra, subKey)
+	end
+end
+
+-- The actual chat send. Only call this once a greet has already been
+-- decided (cooldown/chance/ignore-list already checked by SendGreeting, and
+-- -- for coordinated triggers -- the cross-client election already won).
+function ns:DispatchGreeting(scopeKey, targetFullName, displayName, extra, subKey)
+	local scopeCfg = HailerDB.scopes[scopeKey]
+	local trigger = (subKey and scopeCfg.triggers and scopeCfg.triggers[subKey]) or scopeCfg
 	extra = extra or {}
 
 	-- Community/Friends chat cannot be posted to from an addon (no public
@@ -412,6 +433,7 @@ local function UpdateGuildRoster()
 						level = level,
 						className = className,
 						classFile = classFile,
+						guid = guid,
 						isNewMember = not HailerDB.knownGuildGUIDs[guid],
 					}
 				end
@@ -428,7 +450,12 @@ local function UpdateGuildRoster()
 	else
 		for _, member in ipairs(newlyOnline) do
 			local shortName = Ambiguate and Ambiguate(member.name, "short") or member.name
-			local extra = { classFile = member.classFile, className = member.className, level = member.level }
+			local extra = {
+				classFile = member.classFile,
+				className = member.className,
+				level = member.level,
+				guid = member.guid,
+			}
 			ns:SendGreeting("guild", member.name, shortName, extra, member.isNewMember and "newMember" or "online")
 		end
 	end
@@ -476,6 +503,10 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
 
 		if ns.InitFriends then
 			ns:InitFriends()
+		end
+
+		if ns.GuildSync then
+			ns.GuildSync:Init()
 		end
 
 		if ns.InitMinimap then
