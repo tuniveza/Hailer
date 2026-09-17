@@ -19,28 +19,15 @@ local TABS = {
 	{ key = "ignore", label = "Ignore List", icon = "Interface\\Icons\\Ability_Rogue_FeignDeath" },
 }
 
+local ON_COLOR = { 0.35, 0.9, 0.45, 1 }
+local OFF_COLOR = { 0.55, 0.55, 0.6, 0.85 }
+local function StatusWord(on)
+	return on and "|cff55e0ffON|r" or "|cff888888off|r"
+end
+
 --------------------------------------------------------------------
 -- Basic themed widget helpers
 --------------------------------------------------------------------
-
-local function SkinButton(btn)
-	local normal = btn:GetNormalTexture()
-	if normal then
-		normal:SetVertexColor(0.32, 0.55, 0.78)
-	end
-	local pushed = btn:GetPushedTexture()
-	if pushed then
-		pushed:SetVertexColor(0.22, 0.42, 0.62)
-	end
-	local highlight = btn:GetHighlightTexture()
-	if highlight then
-		highlight:SetVertexColor(0.55, 0.88, 1)
-	end
-	local fs = btn:GetFontString()
-	if fs then
-		fs:SetTextColor(0.85, 0.95, 1)
-	end
-end
 
 local function CreateLabel(parent, text, dim)
 	local fs = parent:CreateFontString(nil, "ARTWORK", dim and "GameFontDisableSmall" or "GameFontHighlightSmall")
@@ -84,19 +71,43 @@ local function CreateNumberEditBox(parent, width)
 	return eb
 end
 
+-- A genuinely cyan button, drawn from a flat white texture + our own color,
+-- rather than tinting Blizzard's gold button art (which never fully lets go
+-- of its own warm base color under a vertex tint).
 local function CreateButton(parent, text, width, height)
-	local btn = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
+	local btn = CreateFrame("Button", nil, parent, "BackdropTemplate")
 	btn:SetSize(width or 90, height or 22)
-	btn:SetText(text)
-	SkinButton(btn)
+	btn:SetBackdrop({
+		bgFile = "Interface\\Buttons\\WHITE8x8",
+		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+		edgeSize = 10,
+	})
+	btn:SetBackdropColor(0.07, 0.26, 0.40, 0.92)
+	btn:SetBackdropBorderColor(0.35, 0.75, 0.95, 1)
+
+	local highlight = btn:CreateTexture(nil, "HIGHLIGHT")
+	highlight:SetAllPoints()
+	highlight:SetColorTexture(0.55, 0.88, 1, 0.3)
+	btn:SetHighlightTexture(highlight)
+
+	local fs = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+	fs:SetPoint("CENTER")
+	fs:SetText(text)
+	fs:SetTextColor(0.85, 0.95, 1)
+	btn:SetFontString(fs)
+
+	btn:SetScript("OnMouseDown", function(self)
+		self:SetBackdropColor(0.03, 0.14, 0.22, 0.96)
+	end)
+	btn:SetScript("OnMouseUp", function(self)
+		self:SetBackdropColor(0.07, 0.26, 0.40, 0.92)
+	end)
+
 	return btn
 end
 
 local function CreateTabButton(parent, text, onClick, width, iconPath)
-	local btn = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
-	btn:SetSize(width or 168, 28)
-	btn:SetText(text)
-	SkinButton(btn)
+	local btn = CreateButton(parent, text, width or 168, 28)
 	btn:SetScript("OnClick", onClick)
 	if iconPath then
 		local icon = btn:CreateTexture(nil, "ARTWORK")
@@ -108,10 +119,18 @@ local function CreateTabButton(parent, text, onClick, width, iconPath)
 		if fs then
 			fs:ClearAllPoints()
 			fs:SetPoint("LEFT", icon, "RIGHT", 6, 0)
-			fs:SetPoint("RIGHT", -6, 0)
+			fs:SetPoint("RIGHT", -20, 0)
 			fs:SetJustifyH("LEFT")
 		end
 	end
+
+	local dot = btn:CreateTexture(nil, "OVERLAY")
+	dot:SetTexture("Interface\\Buttons\\WHITE8x8")
+	dot:SetSize(9, 9)
+	dot:SetPoint("TOPRIGHT", -5, -5)
+	dot:Hide()
+	btn.statusDot = dot
+
 	return btn
 end
 
@@ -493,6 +512,7 @@ local function BuildScopePage(page, scopeKey)
 	enableCB:SetPoint("TOPLEFT", 0, y)
 	enableCB:SetScript("OnClick", function(self)
 		HailerDB.scopes[scopeKey].enabled = self:GetChecked() and true or false
+		ns:UpdateNavIndicators()
 	end)
 	y = y - 30
 
@@ -547,7 +567,7 @@ local function BuildScopePage(page, scopeKey)
 	end
 end
 
-local function BuildGuildTriggerSection(parent, subKey)
+local function BuildGuildTriggerSection(parent, subKey, onEnabledChanged)
 	local y = -4
 	local function Trigger()
 		return HailerDB.scopes.guild.triggers[subKey]
@@ -557,6 +577,9 @@ local function BuildGuildTriggerSection(parent, subKey)
 	enableCB:SetPoint("TOPLEFT", 0, y)
 	enableCB:SetScript("OnClick", function(self)
 		Trigger().enabled = self:GetChecked() and true or false
+		if onEnabledChanged then
+			onEnabledChanged()
+		end
 	end)
 	y = y - 30
 
@@ -627,6 +650,17 @@ local function BuildGuildPage(page)
 	local buttons = {}
 	local activeSub = "newMember"
 
+	local function UpdateSubIndicators()
+		for key, btn in pairs(buttons) do
+			local trigger = HailerDB.scopes.guild.triggers[key]
+			if btn.statusDot and trigger then
+				local c = trigger.enabled and ON_COLOR or OFF_COLOR
+				btn.statusDot:SetVertexColor(c[1], c[2], c[3], c[4])
+				btn.statusDot:Show()
+			end
+		end
+	end
+
 	local function SelectSub(key)
 		activeSub = key
 		for k, sec in pairs(sections) do
@@ -642,6 +676,7 @@ local function BuildGuildPage(page)
 				btn:UnlockHighlight()
 			end
 		end
+		UpdateSubIndicators()
 	end
 
 	for i, tab in ipairs(subTabs) do
@@ -655,7 +690,7 @@ local function BuildGuildPage(page)
 		section:SetAllPoints()
 		section:Hide()
 		sections[tab.key] = section
-		BuildGuildTriggerSection(section, tab.key)
+		BuildGuildTriggerSection(section, tab.key, UpdateSubIndicators)
 	end
 
 	page.Refresh = function()
@@ -678,24 +713,48 @@ local function BuildGeneralPage(page)
 		end
 	end)
 
-	local allBtn = CreateButton(page, "Enable / Disable All Scopes", 210, 24)
+	local allBtn = CreateButton(page, "Enable / Disable Optional Scopes", 230, 24)
 	allBtn:SetPoint("TOPLEFT", 0, -92)
 	allBtn:SetScript("OnClick", function()
 		local anyEnabled = false
-		for _, key in ipairs(ns.scopeOrder) do
+		for _, key in ipairs(ns.optionalScopeOrder) do
 			if HailerDB.scopes[key].enabled then
 				anyEnabled = true
 				break
 			end
 		end
-		for _, key in ipairs(ns.scopeOrder) do
+		for _, key in ipairs(ns.optionalScopeOrder) do
 			HailerDB.scopes[key].enabled = not anyEnabled
 		end
 		ns:RefreshGUI()
 	end)
 
+	local allHint = CreateLabel(page, "(Party/Instance/Community/Custom/Friends only -- Guild's toggles live on the Guild tab and are never touched here.)", true)
+	allHint:SetPoint("TOPLEFT", 0, -118)
+	allHint:SetJustifyH("LEFT")
+	allHint:SetWidth(480)
+
+	local statusHeader = CreateLabel(page, "Current status (also shown as a dot on each tab):")
+	statusHeader:SetPoint("TOPLEFT", 0, -134)
+
+	local statusLabel = CreateLabel(page, "", true)
+	statusLabel:SetPoint("TOPLEFT", 4, -156)
+	statusLabel:SetJustifyH("LEFT")
+	statusLabel:SetWidth(460)
+
 	page.Refresh = function()
 		minimapCB:SetChecked(not HailerDB.minimap.hide)
+
+		local guild = HailerDB.scopes.guild
+		local lines = {
+			"Guild - New Member (invites): " .. StatusWord(guild.enabled and guild.triggers.newMember.enabled),
+			"Guild - Came Online: " .. StatusWord(guild.enabled and guild.triggers.online.enabled),
+		}
+		for _, key in ipairs(ns.optionalScopeOrder) do
+			local scope = HailerDB.scopes[key]
+			table.insert(lines, scope.label .. ": " .. StatusWord(scope.enabled))
+		end
+		statusLabel:SetText(table.concat(lines, "\n"))
 	end
 end
 
@@ -740,6 +799,25 @@ end
 -- Main frame
 --------------------------------------------------------------------
 
+function ns:UpdateNavIndicators()
+	if not ns.navButtons then
+		return
+	end
+	for _, tab in ipairs(TABS) do
+		local btn = ns.navButtons[tab.key]
+		local scope = btn and HailerDB and HailerDB.scopes[tab.key]
+		if btn and btn.statusDot then
+			if scope then
+				local c = scope.enabled and ON_COLOR or OFF_COLOR
+				btn.statusDot:SetVertexColor(c[1], c[2], c[3], c[4])
+				btn.statusDot:Show()
+			else
+				btn.statusDot:Hide()
+			end
+		end
+	end
+end
+
 function ns:SelectTab(key)
 	ns.activeTab = key
 	for _, page in pairs(ns.pages) do
@@ -759,6 +837,7 @@ function ns:SelectTab(key)
 			btn:UnlockHighlight()
 		end
 	end
+	ns:UpdateNavIndicators()
 end
 
 function ns:RefreshGUI()

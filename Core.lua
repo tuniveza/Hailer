@@ -9,6 +9,12 @@ ns.VERSION = "1.1.0"
 
 ns.scopeOrder = { "party", "instance", "guild", "community", "custom", "friends" }
 
+-- Used by the "Enable/Disable All" toggles (GUI + minimap right-click).
+-- Deliberately excludes "guild" -- guild has its own dedicated New
+-- Member / Came Online toggles, and a blunt "disable everything" click
+-- should never be able to silently turn off guild invites.
+ns.optionalScopeOrder = { "party", "instance", "community", "custom", "friends" }
+
 -- Scopes that have no real chat channel to post into (protected API, or no
 -- channel exists at all) -- these can only ever whisper.
 ns.WHISPER_ONLY_SCOPES = { community = true, friends = true }
@@ -426,6 +432,14 @@ local function UpdateGuildRoster()
 	for i = 1, numMembers do
 		local name, _, _, level, className, _, _, _, online, _, classFile, _, _, _, _, _, guid = GetGuildRosterInfo(i)
 		if guid then
+			-- Mark every roster member "known" as soon as they're visible at
+			-- all -- online or offline -- not just once they happen to log in.
+			-- Otherwise a long-time member who simply hasn't been online
+			-- since Hailer was installed gets mistaken for a brand new
+			-- member ("guild invite") the first time they do log in.
+			local wasKnown = HailerDB.knownGuildGUIDs[guid]
+			HailerDB.knownGuildGUIDs[guid] = true
+
 			if online then
 				if guildInitialized and not knownGuildOnline[guid] then
 					newlyOnline[#newlyOnline + 1] = {
@@ -434,11 +448,10 @@ local function UpdateGuildRoster()
 						className = className,
 						classFile = classFile,
 						guid = guid,
-						isNewMember = not HailerDB.knownGuildGUIDs[guid],
+						isNewMember = not wasKnown,
 					}
 				end
 				knownGuildOnline[guid] = true
-				HailerDB.knownGuildGUIDs[guid] = true
 			else
 				knownGuildOnline[guid] = false
 			end

@@ -81,20 +81,20 @@ local function CreateButton()
 		elseif mouseButton == "RightButton" then
 			local db = HailerDB
 			local anyEnabled = false
-			for _, key in ipairs(ns.scopeOrder) do
+			for _, key in ipairs(ns.optionalScopeOrder) do
 				if db.scopes[key].enabled then
 					anyEnabled = true
 					break
 				end
 			end
-			for _, key in ipairs(ns.scopeOrder) do
+			for _, key in ipairs(ns.optionalScopeOrder) do
 				db.scopes[key].enabled = not anyEnabled
 			end
 			if ns.RefreshGUI then
 				ns:RefreshGUI()
 			end
 			local state = (not anyEnabled) and "|cff40e0ffenabled|r" or "|cffff6060disabled|r"
-			print("Hailer: all greetings " .. state .. ".")
+			print("Hailer: optional greetings (Party/Instance/Community/Custom/Friends) " .. state .. ". Guild toggles are untouched -- use the Guild tab.")
 		end
 	end)
 
@@ -102,7 +102,7 @@ local function CreateButton()
 		GameTooltip:SetOwner(self, "ANCHOR_LEFT")
 		GameTooltip:SetText("Hailer", 0.4, 0.9, 1)
 		GameTooltip:AddLine("Left-click: open settings", 1, 1, 1)
-		GameTooltip:AddLine("Right-click: toggle all greetings", 1, 1, 1)
+		GameTooltip:AddLine("Right-click: toggle optional greetings (not Guild)", 1, 1, 1)
 		GameTooltip:AddLine("Drag: move this button", 1, 1, 1)
 		GameTooltip:Show()
 	end)
